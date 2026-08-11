@@ -64,3 +64,6 @@ client_socket.close()
 server_socket.close()
 
 print("Server stopped.")
+print("Server stopped.")
+print("Server stopped.")
+
