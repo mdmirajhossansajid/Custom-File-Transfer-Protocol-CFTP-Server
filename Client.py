@@ -9,242 +9,544 @@ CLIENT_FOLDER = "Client_file"
 os.makedirs(CLIENT_FOLDER, exist_ok=True)
 
 
-def receive_line(sock):
-    data = b""
+class SocketReader:
+    """Buffered reader for TCP socket data."""
 
-    while b"\n" not in data:
+    def __init__(self, sock):
+        self.sock = sock
+        self.buffer = b""
 
-        chunk = sock.recv(1024)
+    def receive_line(self):
+        """Receive data until a newline is found."""
+        while b"\n" not in self.buffer:
 
-        if not chunk:
-            return None
+            chunk = self.sock.recv(1024)
 
-        data += chunk
+            if not chunk:
+                return None
 
-    line, remaining = data.split(b"\n", 1)
+            self.buffer += chunk
 
-    return line.decode().strip()
+        line, self.buffer = self.buffer.split(b"\n", 1)
 
+        return line.decode().strip()
 
-def receive_exact(sock, size):
-    data = b""
+    def receive_exact(self, size):
+        """Receive exactly 'size' bytes from the socket."""
 
-    while len(data) < size:
+        while len(self.buffer) < size:
 
-        chunk = sock.recv(min(4096, size - len(data)))
-
-        if not chunk:
-            raise ConnectionError(
-                "Connection closed during file transfer."
+            chunk = self.sock.recv(
+                min(4096, size - len(self.buffer))
             )
 
-        data += chunk
+            if not chunk:
+                raise ConnectionError(
+                    "Connection closed during file transfer."
+                )
 
-    return data
+            self.buffer += chunk
+
+        data = self.buffer[:size]
+
+        self.buffer = self.buffer[size:]
+
+        return data
 
 
-# Create TCP socket
-client_socket = socket.socket(
-    socket.AF_INET,
-    socket.SOCK_STREAM
-)
+def send_line(sock, message):
+    """Send a text message followed by a newline."""
+    sock.sendall(
+        f"{message}\n".encode()
+    )
 
-# Connect to server
-client_socket.connect((HOST, PORT))
 
-print("=" * 50)
-print("       CUSTOM FTP CLIENT")
-print("=" * 50)
-print("Connected to server.")
-print()
-
-while True:
-
-    command = input("FTP> ").strip()
-
-    if not command:
-        continue
+def main():
 
     # =========================
-    # LIST
+    # CREATE SOCKET
     # =========================
 
-    if command.upper() == "LIST":
-
-        client_socket.sendall(b"LIST\n")
-
-        response = receive_line(client_socket)
-
-        if response.startswith("OK"):
-
-            file_size = int(response.split()[1])
-
-            data = receive_exact(
-                client_socket,
-                file_size
-            )
-
-            print("\nServer files:")
-
-            if data:
-                print(data.decode())
-
-            print()
-
-        else:
-            print("Server:", response)
+    client_socket = socket.socket(
+        socket.AF_INET,
+        socket.SOCK_STREAM
+    )
 
     # =========================
-    # DOWNLOAD
+    # CONNECT TO SERVER
     # =========================
 
-    elif command.upper().startswith("DOWNLOAD"):
+    try:
 
-        parts = command.split(maxsplit=1)
-
-        if len(parts) < 2:
-            print("Usage: DOWNLOAD filename")
-            continue
-
-        filename = os.path.basename(parts[1])
-
-        client_socket.sendall(
-            f"DOWNLOAD {filename}\n".encode()
+        client_socket.connect(
+            (HOST, PORT)
         )
 
-        response = receive_line(client_socket)
+    except (
+        ConnectionRefusedError,
+        OSError
+    ) as e:
 
-        if response.startswith("OK"):
+        print(
+            f"Could not connect to server "
+            f"at {HOST}:{PORT} ({e})"
+        )
 
-            file_size = int(response.split()[1])
+        print(
+            "Make sure Server.py is running first."
+        )
 
-            file_path = os.path.join(
-                CLIENT_FOLDER,
-                filename
-            )
+        return
 
-            print(f"Downloading: {filename}")
-            print(f"File size: {file_size} bytes")
+    print("=" * 50)
+    print("       CUSTOM FTP CLIENT")
+    print("=" * 50)
+    print("Connected to server.")
+    print()
 
-            received = 0
+    reader = SocketReader(client_socket)
 
-            with open(file_path, "wb") as file:
+    try:
 
-                while received < file_size:
+        while True:
 
-                    data = client_socket.recv(
-                        min(4096, file_size - received)
+            try:
+
+                command = input(
+                    "FTP> "
+                ).strip()
+
+            except (
+                KeyboardInterrupt,
+                EOFError
+            ):
+
+                print("\nExiting...")
+
+                break
+
+            if not command:
+                continue
+
+            # =========================
+            # LIST
+            # =========================
+
+            if command.upper() == "LIST":
+
+                send_line(
+                    client_socket,
+                    "LIST"
+                )
+
+                response = reader.receive_line()
+
+                if response is None:
+
+                    print(
+                        "Server closed the connection."
                     )
 
-                    if not data:
-                        break
+                    break
 
-                    file.write(data)
-                    received += len(data)
+                if response.startswith("OK"):
 
-            if received == file_size:
+                    try:
 
-                print("Download completed.")
-                print(f"Saved to: {file_path}")
+                        file_size = int(
+                            response.split()[1]
+                        )
+
+                    except (
+                        IndexError,
+                        ValueError
+                    ):
+
+                        print(
+                            "Invalid server response."
+                        )
+
+                        continue
+
+                    data = reader.receive_exact(
+                        file_size
+                    )
+
+                    print("\nServer files:")
+
+                    if data:
+
+                        print(
+                            data.decode(
+                                errors="replace"
+                            )
+                        )
+
+                    else:
+
+                        print(
+                            "Server folder is empty."
+                        )
+
+                    print()
+
+                else:
+
+                    print(
+                        "Server:",
+                        response
+                    )
+
+            # =========================
+            # DOWNLOAD
+            # =========================
+
+            elif command.upper().startswith(
+                "DOWNLOAD"
+            ):
+
+                parts = command.split(
+                    maxsplit=1
+                )
+
+                if len(parts) < 2:
+
+                    print(
+                        "Usage: DOWNLOAD filename"
+                    )
+
+                    continue
+
+                filename = os.path.basename(
+                    parts[1]
+                )
+
+                send_line(
+                    client_socket,
+                    f"DOWNLOAD {filename}"
+                )
+
+                response = reader.receive_line()
+
+                if response is None:
+
+                    print(
+                        "Server closed the connection."
+                    )
+
+                    break
+
+                if response.startswith("OK"):
+
+                    try:
+
+                        file_size = int(
+                            response.split()[1]
+                        )
+
+                    except (
+                        IndexError,
+                        ValueError
+                    ):
+
+                        print(
+                            "Invalid file size received."
+                        )
+
+                        continue
+
+                    file_path = os.path.join(
+                        CLIENT_FOLDER,
+                        filename
+                    )
+
+                    print(
+                        f"Downloading: {filename}"
+                    )
+
+                    print(
+                        f"File size: "
+                        f"{file_size} bytes"
+                    )
+
+                    received = 0
+
+                    try:
+
+                        with open(
+                            file_path,
+                            "wb"
+                        ) as file:
+
+                            while received < file_size:
+
+                                remaining = (
+                                    file_size
+                                    - received
+                                )
+
+                                data = (
+                                    reader.sock.recv(
+                                        min(
+                                            4096,
+                                            remaining
+                                        )
+                                    )
+                                )
+
+                                if not data:
+
+                                    break
+
+                                file.write(data)
+
+                                received += len(data)
+
+                        if received == file_size:
+
+                            print(
+                                "Download completed."
+                            )
+
+                            print(
+                                f"Saved to: "
+                                f"{file_path}"
+                            )
+
+                        else:
+
+                            print(
+                                "Download incomplete."
+                            )
+
+                            if os.path.exists(
+                                file_path
+                            ):
+
+                                os.remove(
+                                    file_path
+                                )
+
+                    except OSError as e:
+
+                        print(
+                            f"Error saving file: {e}"
+                        )
+
+                else:
+
+                    print(
+                        "Server:",
+                        response
+                    )
+
+            # =========================
+            # UPLOAD
+            # =========================
+
+            elif command.upper().startswith(
+                "UPLOAD"
+            ):
+
+                parts = command.split(
+                    maxsplit=1
+                )
+
+                if len(parts) < 2:
+
+                    print(
+                        "Usage: UPLOAD filename"
+                    )
+
+                    continue
+
+                filename = os.path.basename(
+                    parts[1]
+                )
+
+                file_path = os.path.join(
+                    CLIENT_FOLDER,
+                    filename
+                )
+
+                if not os.path.isfile(
+                    file_path
+                ):
+
+                    print(
+                        "File not found in "
+                        "Client_file folder."
+                    )
+
+                    continue
+
+                try:
+
+                    file_size = os.path.getsize(
+                        file_path
+                    )
+
+                except OSError as e:
+
+                    print(
+                        f"Error accessing file: {e}"
+                    )
+
+                    continue
+
+                send_line(
+                    client_socket,
+                    f"UPLOAD "
+                    f"{filename} "
+                    f"{file_size}"
+                )
+
+                response = reader.receive_line()
+
+                if response is None:
+
+                    print(
+                        "Server closed the connection."
+                    )
+
+                    break
+
+                if response == "READY":
+
+                    print(
+                        f"Uploading: {filename}"
+                    )
+
+                    print(
+                        f"File size: "
+                        f"{file_size} bytes"
+                    )
+
+                    try:
+
+                        with open(
+                            file_path,
+                            "rb"
+                        ) as file:
+
+                            while True:
+
+                                data = file.read(
+                                    4096
+                                )
+
+                                if not data:
+
+                                    break
+
+                                client_socket.sendall(
+                                    data
+                                )
+
+                        result = (
+                            reader.receive_line()
+                        )
+
+                        if result == "UPLOAD_SUCCESS":
+
+                            print(
+                                "Upload completed."
+                            )
+
+                        else:
+
+                            print(
+                                "Server:",
+                                result
+                            )
+
+                    except OSError as e:
+
+                        print(
+                            f"Error reading file: {e}"
+                        )
+
+                else:
+
+                    print(
+                        "Server:",
+                        response
+                    )
+
+            # =========================
+            # QUIT
+            # =========================
+
+            elif command.upper() == "QUIT":
+
+                send_line(
+                    client_socket,
+                    "QUIT"
+                )
+
+                response = (
+                    reader.receive_line()
+                )
+
+                if response:
+
+                    print(
+                        "Server:",
+                        response
+                    )
+
+                break
+
+            # =========================
+            # INVALID COMMAND
+            # =========================
 
             else:
 
-                print("Download incomplete.")
+                print(
+                    "Available commands:"
+                )
 
-        else:
+                print(
+                    "  LIST"
+                )
 
-            print("Server:", response)
+                print(
+                    "  DOWNLOAD filename"
+                )
 
-    # =========================
-    # UPLOAD
-    # =========================
+                print(
+                    "  UPLOAD filename"
+                )
 
-    elif command.upper().startswith("UPLOAD"):
+                print(
+                    "  QUIT"
+                )
 
-        parts = command.split(maxsplit=1)
+    except (
+        ConnectionResetError,
+        ConnectionAbortedError,
+        BrokenPipeError
+    ):
 
-        if len(parts) < 2:
-            print("Usage: UPLOAD filename")
-            continue
-
-        filename = os.path.basename(parts[1])
-
-        file_path = os.path.join(
-            CLIENT_FOLDER,
-            filename
+        print(
+            "\nConnection to server was lost."
         )
 
-        if not os.path.isfile(file_path):
+    except ConnectionError as e:
 
-            print("File not found in Client_file folder.")
-
-            continue
-
-        file_size = os.path.getsize(file_path)
-
-        client_socket.sendall(
-            f"UPLOAD {filename} {file_size}\n".encode()
+        print(
+            f"\nConnection error: {e}"
         )
 
-        response = receive_line(client_socket)
+    finally:
 
-        if response == "READY":
+        client_socket.close()
 
-            print(f"Uploading: {filename}")
-            print(f"File size: {file_size} bytes")
-
-            with open(file_path, "rb") as file:
-
-                while True:
-
-                    data = file.read(4096)
-
-                    if not data:
-                        break
-
-                    client_socket.sendall(data)
-
-            result = receive_line(client_socket)
-
-            if result == "UPLOAD_SUCCESS":
-
-                print("Upload completed.")
-
-            else:
-
-                print("Server:", result)
-
-        else:
-
-            print("Server:", response)
-
-    # =========================
-    # QUIT
-    # =========================
-
-    elif command.upper() == "QUIT":
-
-        client_socket.sendall(b"QUIT\n")
-
-        response = receive_line(client_socket)
-
-        print("Server:", response)
-
-        break
-
-    # =========================
-    # INVALID
-    # =========================
-
-    else:
-
-        print("Available commands:")
-        print("  LIST")
-        print("  DOWNLOAD filename")
-        print("  UPLOAD filename")
-        print("  QUIT")
+        print(
+            "Disconnected from server."
+        )
 
 
-client_socket.close()
-
-print("Disconnected from server.")
+if __name__ == "__main__":
+    main()
