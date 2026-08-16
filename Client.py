@@ -1,13 +1,10 @@
 import socket
 import os
-
 HOST = "127.0.0.1"
 PORT = 5000
-
 CLIENT_FOLDER = "Client_file"
 
 os.makedirs(CLIENT_FOLDER, exist_ok=True)
-
 
 class SocketReader:
     """Buffered reader for TCP socket data."""
